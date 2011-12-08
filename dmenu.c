@@ -61,8 +61,35 @@ static Item *prev, *curr, *next, *sel;
 static Window win;
 static XIC xic;
 
+static char *histfile = NULL;
+static size_t histsize = 0;
+
 static int (*fstrncmp)(const char *, const char *, size_t) = strncmp;
 static char *(*fstrstr)(const char *, const char *) = strstr;
+
+static int
+writehistory(char *command) {
+	size_t i = 0;
+	FILE *f;
+
+	if(!histfile || strlen(command) <= 0)
+		return 0;
+
+	if((f = fopen(histfile, "w"))) {
+		fputs(command, f);
+		fputc('\n', f);
+		for(; i < histsize; i++) {
+			if(strcmp(command, items[i].text) != 0) {
+				fputs(items[i].text, f);
+				fputc('\n', f);
+			}
+		}
+		fclose(f);
+		return 1;
+	}
+
+	return 0;
+}
 
 int
 main(int argc, char *argv[]) {
@@ -100,6 +127,8 @@ main(int argc, char *argv[]) {
 			selbgcolor = argv[++i];
 		else if(!strcmp(argv[i], "-sf"))  /* selected foreground color */
 			selfgcolor = argv[++i];
+		else if(!strcmp(argv[i], "-hist"))
+			histfile = argv[++i];
 		else
 			usage();
 
@@ -352,6 +381,7 @@ keypress(XKeyEvent *ev) {
 	case XK_Return:
 	case XK_KP_Enter:
 		puts((sel && !(ev->state & ShiftMask)) ? sel->text : text);
+		writehistory(sel ? sel->text : text);
 		exit(EXIT_SUCCESS);
 	case XK_Right:
 		if(text[cursor] != '\0') {
@@ -459,20 +489,28 @@ paste(void) {
 void
 readstdin(void) {
 	char buf[sizeof text], *p, *maxstr = NULL;
-	size_t i, max = 0, size = 0;
-
-	/* read each line from stdin and add it to the item list */
-	for(i = 0; fgets(buf, sizeof buf, stdin); i++) {
-		if(i+1 >= size / sizeof *items)
-			if(!(items = realloc(items, (size += BUFSIZ))))
-				eprintf("cannot realloc %u bytes:", size);
-		if((p = strchr(buf, '\n')))
-			*p = '\0';
-		if(!(items[i].text = strdup(buf)))
-			eprintf("cannot strdup %u bytes:", strlen(buf)+1);
-		if(strlen(items[i].text) > max)
-			max = strlen(maxstr = items[i].text);
+	size_t i = 0, max = 0, size = 0;
+#define readstdin_internals(the_input_file) \
+	for(; fgets(buf, sizeof buf, the_input_file); i++) {\
+		if(i+1 >= size / sizeof *items)\
+			if(!(items = realloc(items, (size += BUFSIZ))))\
+				eprintf("cannot realloc %u bytes:", size);\
+		if((p = strchr(buf, '\n')))\
+			*p = '\0';\
+		if(!(items[i].text = strdup(buf)))\
+			eprintf("cannot strdup %u bytes:", strlen(buf)+1);\
+		if(strlen(items[i].text) > max)\
+			max = strlen(maxstr = items[i].text);\
+	}\
+	/* lines from the history file must appear first in menu */
+	FILE *f;
+	if(histfile && (f = fopen(histfile, "r"))) {
+		readstdin_internals(f);
+		histsize = i;
+		fclose(f);
 	}
+	/* read each line from stdin and add it to the item list */
+	readstdin_internals(stdin);
 	if(items)
 		items[i].text = NULL;
 	inputw = maxstr ? textw(dc, maxstr) : 0;
@@ -594,7 +632,7 @@ setup(void) {
 
 void
 usage(void) {
-	fputs("usage: dmenu [-b] [-f] [-i] [-l lines] [-p prompt] [-fn font]\n"
+	fputs("usage: dmenu [-b] [-f] [-i] [-l lines] [-p prompt] [-hist file] [-fn font]\n"
 	      "             [-nb color] [-nf color] [-sb color] [-sf color] [-v]\n", stderr);
 	exit(EXIT_FAILURE);
 }
